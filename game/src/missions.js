@@ -1,457 +1,502 @@
-// The story of Palm Haven Heat, and the work that pays for it.
-// Jax Marlowe is home after six years away. Fixer Sol Ferreira has jobs:
-// six story missions that escalate from a lift to the marina to the score
-// of the decade, plus street work (cab fares, gate runs) that never dries
-// up. A small stage engine drives them all: every stage is a place to
-// reach, a car to be in, a timer to beat, or a crew to put down.
-import * as THREE from 'three';
-import { PLACES } from './layout.js';
-import { spawnThug, clearThugs, combat } from './combat.js';
-import { Rng } from './rng.js';
+// missions.js — the story of Palm Haven Heat and its side hustles.
+// Five story missions for fixer Lola Ferreira (steal, courier, race,
+// collect, escape), plus repeatable taxi fares and courier briefcases.
+// A small stage machine drives objectives, markers, timers, dialogue
+// and payouts; the main loop feeds it the world each frame.
 
-const sideRng = new Rng(4242);
+const THREE = window.THREE;
 
-export const story = {
-  index: 0,          // next story mission to offer
-  active: null,       // the running mission record
-  stageAt: 0,
-  stageTimer: null,   // seconds left when a stage is timed
-  offered: false,     // a new-job banner has been shown for `index`
-  done: false,        // the finale is complete
-};
+export class MissionManager {
+  constructor(game) {
+    this.game = game;
+    this.active = null; // current mission instance
+    this.stageIdx = 0;
+    this.stageT = 0;
+    this.dialogue = []; // queued [name, text]
+    this.dialogueT = 0;
+    this.marker = null; // THREE mesh for the objective pillar
+    this.markerPos = null;
+    this.clockText = '';
+    this.failed = null;
+    this.buildMarker();
+  }
 
-let ctx = null;
-let scene = null;
-let beacon = null;
-let goldCar = null;
+  buildMarker() {
+    const geo = new THREE.CylinderGeometry(1, 1, 34, 20, 1, true);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xffd60a,
+      transparent: true,
+      opacity: 0.3,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    this.marker = new THREE.Mesh(geo, mat);
+    this.marker.visible = false;
+    this.marker.position.y = 17;
+    this.game.scene.add(this.marker);
+  }
 
-export function initMissions(c, s) {
-  ctx = c;
-  scene = s;
-  const geo = new THREE.CylinderGeometry(2.4, 2.4, 34, 18, 1, true);
-  const mat = new THREE.MeshBasicMaterial({
-    color: 0xffd94d, transparent: true, opacity: 0.33, side: THREE.DoubleSide,
-    depthWrite: false, blending: THREE.AdditiveBlending,
-  });
-  beacon = new THREE.Mesh(geo, mat);
-  beacon.position.y = 17;
-  beacon.visible = false;
-  scene.add(beacon);
+  setMarker(pos, radius) {
+    this.markerPos = pos;
+    if (!pos) {
+      this.marker.visible = false;
+      return;
+    }
+    this.marker.visible = true;
+    this.marker.position.x = pos.x;
+    this.marker.position.z = pos.z;
+    this.marker.scale.set(radius, 1, radius);
+  }
+
+  say(lines) {
+    for (const [name, text] of lines) this.dialogue.push([name, text]);
+  }
+
+  // ---- lifecycle -------------------------------------------------
+
+  get storyIndex() {
+    return this.game.save.missionIndex;
+  }
+
+  nextStoryMission() {
+    return STORY[this.storyIndex] || null;
+  }
+
+  // Where the next story mission begins (usually Lola's garage).
+  startPoint() {
+    const m = this.nextStoryMission();
+    if (!m) return null;
+    return { pos: m.startAt(this.game), mission: m };
+  }
+
+  tryStart() {
+    const m = this.nextStoryMission();
+    if (!m || this.active) return false;
+    this.active = m;
+    this.stageIdx = 0;
+    this.stageT = 0;
+    this.failed = null;
+    this.say(m.intro);
+    this.game.sound.phoneBuzz();
+    const stage = m.stages[0];
+    if (stage.onStart) stage.onStart(this.game, this);
+    this.refreshObjective();
+    return true;
+  }
+
+  refreshObjective() {
+    const m = this.active;
+    if (!m) {
+      const next = this.nextStoryMission();
+      if (next) {
+        this.game.hud.objective('Next job', `${next.title} — head to the gold marker to start.`);
+      } else {
+        this.game.hud.objective('Palm Haven Heat', 'Story complete. Taxi fares and courier cases still pay.');
+      }
+      return;
+    }
+    const stage = m.stages[this.stageIdx];
+    this.game.hud.objective(m.title, stage.text(this.game, this));
+  }
+
+  complete() {
+    const m = this.active;
+    const g = this.game;
+    g.addCash(m.reward);
+    g.sound.missionGood();
+    g.hud.centre('MISSION PASSED  +$' + m.reward);
+    this.say(m.outro);
+    if (m.id === STORY[STORY.length - 1].id) {
+      g.save.storyDone = true;
+      g.hud.message('Story complete — Palm Haven is yours. Free roam, fares and cases continue.', 7);
+    }
+    g.save.missionIndex++;
+    g.persist();
+    this.active = null;
+    this.setMarker(null, 0);
+    g.hud.setClock('');
+    this.refreshObjective();
+  }
+
+  fail(reason) {
+    const g = this.game;
+    g.sound.missionBad();
+    g.hud.centre('MISSION FAILED');
+    g.hud.message(reason + ' — head back to the gold marker to try again.', 6);
+    if (this.active && this.active.cleanup) this.active.cleanup(g, this);
+    this.active = null;
+    this.setMarker(null, 0);
+    g.hud.setClock('');
+    this.refreshObjective();
+  }
+
+  onPlayerDown(kind) {
+    // Busted or wasted mid-mission: the job is blown.
+    if (this.active) this.fail(kind === 'busted' ? 'You got busted' : 'You got wasted');
+  }
+
+  // ---- per-frame ---------------------------------------------------
+
+  update(dt) {
+    const g = this.game;
+    // Dialogue drip-feed.
+    if (this.dialogue.length) {
+      this.dialogueT -= dt;
+      if (this.dialogueT <= 0) {
+        const [name, text] = this.dialogue.shift();
+        g.hud.subtitle(name, text, 4.2);
+        this.dialogueT = 4.3;
+      }
+    }
+    // Pulse the marker.
+    if (this.marker.visible) {
+      this.marker.material.opacity = 0.22 + Math.sin(performance.now() * 0.004) * 0.1;
+    }
+
+    if (!this.active) {
+      // Idle: show the start marker for the next story mission.
+      const sp = this.startPoint();
+      if (sp) {
+        this.setMarker(sp.pos, 3.2);
+        const d = dist2d(g.player.pos, sp.pos);
+        if (d < 3.4 && !g.player.inCar) this.tryStart();
+        else if (d < 3.4 && g.player.inCar) this.tryStart();
+      } else {
+        this.setMarker(null, 0);
+      }
+      return;
+    }
+
+    const m = this.active;
+    const stage = m.stages[this.stageIdx];
+    this.stageT += dt;
+    if (stage.tick) stage.tick(g, this, dt);
+    const markerPos = stage.marker ? stage.marker(g, this) : null;
+    this.setMarker(markerPos, stage.radius || 3.2);
+    g.hud.setClock(stage.clock ? stage.clock(g, this) : '');
+
+    if (stage.failIf && stage.failIf(g, this)) {
+      this.fail(stage.failText || 'The job fell apart');
+      return;
+    }
+    if (stage.test(g, this)) {
+      this.stageIdx++;
+      this.stageT = 0;
+      if (this.stageIdx >= m.stages.length) {
+        this.complete();
+      } else {
+        const next = m.stages[this.stageIdx];
+        if (next.onStart) next.onStart(g, this);
+        this.refreshObjective();
+      }
+    }
+  }
 }
 
-function setBeacon(x, z, color) {
-  beacon.visible = true;
-  beacon.position.x = x;
-  beacon.position.z = z;
-  beacon.material.color.setHex(color);
-}
-function hideBeacon() {
-  beacon.visible = false;
+export function dist2d(a, b) {
+  return Math.hypot(a.x - b.x, a.z - b.z);
 }
 
-// ---------------------------------------------------------------- missions
-const MISSIONS = [
+// ---------------------------------------------------------------------
+// Story missions. Stage helpers keep the definitions readable.
+
+function gotoStage(text, getPos, radius = 4) {
+  return {
+    text: typeof text === 'function' ? text : () => text,
+    marker: (g) => getPos(g),
+    radius,
+    test: (g) => dist2d(g.player.pos, getPos(g)) < radius,
+  };
+}
+
+const STORY = [
   {
-    id: 'homecoming',
-    title: 'Homecoming',
-    from: 'Sol',
-    intro: 'Jax. Six years and you still owe me a drink. Grab some wheels and meet me at the Marina — I have work.',
-    reward: 200, rep: 1,
-    stages: [
-      { type: 'enterCar', label: 'Get into a car (F near one)' },
-      { type: 'gotoCar', at: 'marina', r: 9, label: 'Drive to the Marina' },
+    id: 'first-wheels',
+    title: 'First Wheels',
+    startAt: (g) => g.landmarks.garage,
+    intro: [
+      ['Lola', 'Dax? Lola Ferreira. I run the garage by the coast road.'],
+      ['Lola', 'A buyer wants the teal coupe sitting in the marina lot. Bring it to me — clean.'],
+      ['Dax', 'Steal a car before my coffee cools. On it.'],
     ],
-    outro: 'Sol: Same old Jax. The city missed you. I did not. Much.',
+    stages: [
+      gotoStage('Get to the marina lot, west side of town.', (g) => g.landmarks.marina, 10),
+      {
+        text: () => 'Steal the marked coupe.',
+        marker: (g, m) => (m.markedCar ? m.markedCar.pos : null),
+        radius: 3,
+        onStart: (g, m) => {
+          m.markedCar = g.spawnSpecialCar('coupe', 0x06d6a0, g.landmarks.marina.x + 6, g.landmarks.marina.z + 4, Math.PI / 2);
+        },
+        test: (g, m) => g.player.inCar === m.markedCar,
+        failIf: (g, m) => m.markedCar && m.markedCar.damage >= 1,
+        failText: 'The coupe is wrecked — Lola wanted it clean',
+      },
+      {
+        text: () => 'Deliver the coupe to Lola\'s garage.',
+        marker: (g) => g.landmarks.garage,
+        radius: 5,
+        test: (g, m) => g.player.inCar === m.markedCar && dist2d(g.player.pos, g.landmarks.garage) < 6,
+        failIf: (g, m) => m.markedCar && m.markedCar.damage >= 1,
+        failText: 'The coupe is wrecked — Lola wanted it clean',
+      },
+    ],
+    reward: 350,
+    outro: [
+      ['Lola', 'Clean paint, full tank. You drive like you were born in a getaway.'],
+      ['Lola', 'Stick around, Dax. Palm Haven is full of people who pay.'],
+    ],
+    cleanup: (g, m) => {
+      if (m.markedCar && g.player.inCar !== m.markedCar) m.markedCar.driver = 'parked';
+    },
   },
   {
-    id: 'delivery',
-    title: 'Special Delivery',
-    from: 'Sol',
-    intro: 'A crate at the South Docks needs to be at Hotel Azure before anyone asks what is in it. Do not ask what is in it.',
-    reward: 450, rep: 1,
-    stages: [
-      { type: 'goto', at: 'docks', r: 7, label: 'Pick up the crate at the South Docks' },
-      { type: 'gotoCar', at: 'azureHotel', r: 10, label: 'Deliver to Hotel Azure — the heat noticed', crime: 2 },
+    id: 'hot-package',
+    title: 'Hot Package',
+    startAt: (g) => g.landmarks.garage,
+    intro: [
+      ['Lola', 'A package is taped under a boardwalk bench. No questions.'],
+      ['Lola', 'Take it to my friend up in the north-east tower district. Expect attention.'],
     ],
-    outro: 'Sol: Clean-ish. The hotel pays in cash and silence. Take both.',
+    stages: [
+      gotoStage('Pick up the package at the boardwalk.', (g) => g.landmarks.boardwalk, 3.4),
+      {
+        text: () => 'Deliver the package across town. The heat is on!',
+        marker: (g) => g.landmarks.hideout,
+        radius: 5,
+        onStart: (g) => {
+          g.wanted.report('mission');
+          g.wanted.report('mission');
+          g.hud.message('The package is hot — half the city saw you take it.', 5);
+        },
+        test: (g) => dist2d(g.player.pos, g.landmarks.hideout) < 6,
+      },
+    ],
+    reward: 500,
+    outro: [['Lola', 'Delivered, and the buyer sends his regards. And his money.']],
   },
   {
-    id: 'shakedown',
-    title: 'Shakedown at Sunset',
-    from: 'Sol',
-    intro: 'Collectors from the Vane family are leaning on the Sunset Bar. Lean back. There is a pistol in it for you.',
-    reward: 600, rep: 2,
-    stages: [
-      { type: 'goto', at: 'sunsetBar', r: 12, label: 'Go to the Sunset Bar' },
-      { type: 'fight', at: 'sunsetBar', count: 3, label: 'Put down the Vane collectors' },
-      { type: 'goto', at: 'sunsetBar', r: 6, label: 'Check in at the bar door' },
+    id: 'against-the-clock',
+    title: 'Against the Clock',
+    startAt: (g) => g.landmarks.garage,
+    intro: [
+      ['Lola', 'A street crew bets nobody can run the Haven loop in two minutes.'],
+      ['Lola', 'Six beacons, one clock. Prove them wrong — any car you like.'],
     ],
-    outro: 'Sol: The bar stands, the Vanes limp. Keep the pistol. You have earned it.',
-    giveGun: true,
+    stages: [
+      {
+        text: (g, m) => `Hit the beacons: ${m.cpIdx || 0}/${m.checkpoints.length} — through the gold pillar.`,
+        marker: (g, m) => m.checkpoints[m.cpIdx || 0],
+        radius: 6,
+        onStart: (g, m) => {
+          const L = g.landmarks;
+          m.checkpoints = [L.downtown, { x: -180, z: -180 }, L.airport, { x: 220, z: -60 }, L.marina, L.garage];
+          m.cpIdx = 0;
+          m.timeLeft = 125;
+        },
+        tick: (g, m, dt) => {
+          m.timeLeft -= dt;
+        },
+        clock: (g, m) => '⏱ ' + Math.max(0, m.timeLeft).toFixed(1),
+        test: (g, m) => {
+          const cp = m.checkpoints[m.cpIdx];
+          if (cp && dist2d(g.player.pos, cp) < 7) {
+            m.cpIdx++;
+            m.timeLeft += 9;
+            g.sound.pickup();
+            g.hud.message(`Beacon ${m.cpIdx}/${m.checkpoints.length} — +9s`, 2);
+            m.refreshObjective();
+          }
+          return m.cpIdx >= m.checkpoints.length;
+        },
+        failIf: (g, m) => m.timeLeft <= 0,
+        failText: 'Out of time — the crew keeps their money',
+      },
+    ],
+    reward: 450,
+    outro: [['Lola', 'Two minutes, huh? The crew is still counting on their fingers.']],
   },
   {
-    id: 'race',
-    title: 'Coastline Run',
-    from: 'Sol',
-    intro: 'A sponsor wants proof Palm Haven still breeds drivers. Eight gates, one clock, no excuses.',
-    reward: 800, rep: 2,
-    stages: [
-      { type: 'race', gates: 'coast', time: 115, label: 'Run the Coastline gates' },
+    id: 'debt-collector',
+    title: 'The Collector',
+    startAt: (g) => g.landmarks.garage,
+    intro: [
+      ['Lola', 'Three friends of mine owe the garage money. Visit them. Be persuasive.'],
+      ['Lola', 'Stand close, look patient, and let the envelope change hands.'],
     ],
-    outro: 'Sol: The sponsor is impressed. So am I, and I do not impress.',
+    stages: [
+      {
+        text: (g, m) => `Collect the debts: ${m.collected || 0}/3 — stand in the marker.`,
+        marker: (g, m) => m.spots[m.spotIdx || 0],
+        radius: 3.4,
+        onStart: (g, m) => {
+          m.spots = [
+            { x: -90, z: -90 },
+            { x: 130, z: 40 },
+            { x: -40, z: 130 },
+          ];
+          m.spotIdx = 0;
+          m.collected = 0;
+          m.channel = 0;
+        },
+        tick: (g, m, dt) => {
+          const spot = m.spots[m.spotIdx];
+          if (spot && dist2d(g.player.pos, spot) < 3.4 && !g.player.inCar) m.channel += dt;
+          else m.channel = Math.max(0, m.channel - dt * 2);
+        },
+        test: (g, m) => {
+          if (m.channel >= 2.2) {
+            m.collected++;
+            m.spotIdx++;
+            m.channel = 0;
+            g.sound.cash();
+            if (m.spotIdx === 2) {
+              g.wanted.report('mission');
+              g.hud.message('The last debtor called the police while you counted.', 4.5);
+            } else {
+              g.hud.message(`Debt ${m.collected}/3 collected.`, 3);
+            }
+            m.refreshObjective();
+          }
+          return m.collected >= 3;
+        },
+      },
+    ],
+    reward: 600,
+    outro: [['Lola', 'All three envelopes, and nobody lost a finger. Professional.']],
   },
   {
-    id: 'heat',
-    title: 'Five-Star Heat',
-    from: 'Sol',
-    intro: 'Warehouse at the docks. You take the package, the whole PHPD takes an interest. Lose them at the Coral Court.',
-    reward: 1200, rep: 3,
-    stages: [
-      { type: 'goto', at: 'docks', r: 7, label: 'Take the package at the warehouse' },
-      { type: 'escape', at: 'safehouse', r: 10, label: 'Reach the Coral Court Motel', crime: 4 },
+    id: 'sunset-getaway',
+    title: 'Sunset Getaway',
+    startAt: (g) => g.landmarks.garage,
+    intro: [
+      ['Lola', 'Last job, Dax. A cash bag sits at the pier head — a lot of cash.'],
+      ['Lola', 'Every cop in Palm Haven will want a word. Lose them, then reach the hideout.'],
     ],
-    outro: 'Sol: Four stars and you walked away whistling. Remind me never to play poker with you.',
-  },
-  {
-    id: 'score',
-    title: 'The Marlowe Score',
-    from: 'Sol',
-    intro: 'One Aurelia GT, gold, sitting on Fountain Plaza. Take it, collect me at the Marina, and we vanish off the Ferry Pier.',
-    reward: 2500, rep: 4,
     stages: [
-      { type: 'steal', at: 'plaza', label: 'Steal the gold Aurelia GT on Fountain Plaza' },
-      { type: 'pickup', at: 'marina', r: 9, label: 'Collect Sol at the Marina', crime: 3 },
-      { type: 'escape', at: 'pierEnd', r: 8, label: 'Escape to the Ferry Pier' },
+      gotoStage('Take the cash bag at the pier head.', (g) => g.landmarks.pierEnd, 4),
+      {
+        text: () => 'Lose the heat, then reach the Cliffside Hideout (north-east).',
+        marker: (g) => g.landmarks.hideout,
+        radius: 7,
+        onStart: (g) => {
+          g.wanted.heat = 8.5; // straight to four stars
+          g.wanted.sinceCrime = 0;
+          g.addCash(0);
+          g.hud.message('That bag had a tracker. Of course it did.', 5);
+        },
+        test: (g) => dist2d(g.player.pos, g.landmarks.hideout) < 8 && g.wanted.stars === 0,
+      },
     ],
-    outro: 'Sol: That, partner, is how legends retire. Palm Haven is ours now.',
+    reward: 1200,
+    outro: [
+      ['Lola', 'You just outran the whole Palm Haven PD at sunset.'],
+      ['Lola', 'The city is yours now, Dax. Try not to give it back.'],
+    ],
   },
 ];
 
-const RACE_GATES = {
-  coast: [
-    { x: 189, z: -133 }, { x: 189, z: -21 }, { x: 147, z: 91 }, { x: 35, z: 147 },
-    { x: -77, z: 91 }, { x: -133, z: -21 }, { x: -77, z: -133 }, { x: 35, z: -189 },
-  ],
-  street: [
-    { x: 35, z: -21 }, { x: 91, z: 35 }, { x: 35, z: 91 }, { x: -21, z: 35 },
-    { x: -77, z: -21 }, { x: -21, z: -77 },
-  ],
-};
+// ---------------------------------------------------------------------
+// Side jobs: taxi fares and courier briefcases, always on offer.
 
-function stagePoint(stage) {
-  if (stage.at) return PLACES[stage.at];
-  if (stage.gate) return stage.gate;
-  return null;
-}
+export class SideJobs {
+  constructor(game) {
+    this.game = game;
+    this.fare = null; // {ped, dest, state: 'hail'|'ride'}
+    this.cases = []; // {pos, mesh}
+    this.caseTimer = 4;
+  }
 
-export function currentMission() {
-  return story.active;
-}
+  spawnCase() {
+    const g = this.game;
+    const spots = [
+      { x: -140, z: 60 }, { x: 80, z: -140 }, { x: 200, z: 120 },
+      { x: -230, z: -40 }, { x: 40, z: -230 }, { x: 260, z: -180 },
+      { x: -60, z: 190 }, { x: 150, z: 190 },
+    ];
+    const spot = spots[Math.floor(Math.random() * spots.length)];
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(0.9, 0.4, 0.6),
+      new THREE.MeshBasicMaterial({ color: 0xffcf3f }),
+    );
+    mesh.position.set(spot.x, 0.7, spot.z);
+    g.scene.add(mesh);
+    this.cases.push({ pos: spot, mesh });
+  }
 
-function startMission(i) {
-  const def = MISSIONS[i];
-  story.active = { def, stageAt: 0, gateAt: 0, kills: 0 };
-  story.stageTimer = null;
-  ctx.banner(def.title, `${def.from}: ${def.intro}`, 6);
-  ctx.sfx('mission');
-  beginStage();
-}
-
-function beginStage() {
-  const m = story.active;
-  if (!m) return;
-  const stage = m.def.stages[story.stageAt];
-  story.stageTimer = stage.time ?? null;
-  m.kills = 0;
-  if (stage.crime) ctx.setWanted(stage.crime);
-  if (stage.type === 'fight') {
-    clearThugs();
-    const c = PLACES[stage.at];
-    for (let k = 0; k < stage.count; k++) {
-      spawnThug(c.x + (k - 1) * 4.5, c.z + 9 + (k % 2) * 3, { aggro: false });
+  update(dt) {
+    const g = this.game;
+    // Courier cases: keep three in the world; walk or drive over one.
+    this.caseTimer -= dt;
+    if (this.caseTimer <= 0) {
+      this.caseTimer = 5;
+      if (this.cases.length < 3) this.spawnCase();
     }
-  }
-  if (stage.type === 'steal') {
-    goldCar = ctx.spawnGoldCar(PLACES.plaza.x + 12, PLACES.plaza.z + 10);
-  }
-  if (stage.type === 'race') {
-    m.gateAt = 0;
-    ctx.toast('Hit every gate before the clock runs out');
-  }
-  const p = stagePoint(stage) ?? (stage.type === 'race' ? RACE_GATES[stage.gates][0] : null);
-  if (p) setBeacon(p.x, p.z ?? p.z, 0xffd94d);
-  updateObjective();
-}
-
-function updateObjective() {
-  const m = story.active;
-  if (!m) {
-    ctx.setObjective(null);
-    return;
-  }
-  const stage = m.def.stages[story.stageAt];
-  let text = `${m.def.title} — ${stage.label}`;
-  if (stage.type === 'fight') text += ` (${m.kills}/${stage.count})`;
-  if (stage.type === 'race') text += ` · Gate ${m.gateAt + 1}/${RACE_GATES[stage.gates].length} · ${Math.ceil(story.stageTimer ?? 0)}s`;
-  if (story.stageTimer !== null && stage.type !== 'race') text += ` · ${Math.ceil(story.stageTimer)}s`;
-  ctx.setObjective(text);
-}
-
-function completeStage() {
-  const m = story.active;
-  story.stageAt += 1;
-  ctx.sfx('checkpoint');
-  if (story.stageAt >= m.def.stages.length) {
-    completeMission();
-  } else {
-    beginStage();
-  }
-}
-
-function completeMission() {
-  const m = story.active;
-  const def = m.def;
-  story.active = null;
-  hideBeacon();
-  clearThugs();
-  ctx.addCash(def.reward);
-  ctx.addRep(def.rep);
-  ctx.sfx('cash');
-  ctx.banner('Job complete', `${def.outro}  (+$${def.reward})`, 6);
-  if (def.giveGun) ctx.giveGun();
-  story.index += 1;
-  story.offered = false;
-  if (story.index >= MISSIONS.length) {
-    story.done = true;
-    ctx.onFinale();
-  }
-  ctx.onStoryProgress();
-}
-
-function failStage(reason) {
-  const m = story.active;
-  if (!m) return;
-  ctx.banner('Job blown', reason, 4);
-  ctx.sfx('fail');
-  clearThugs();
-  beginStage(); // restart the current stage
-}
-
-/** Called when the player is busted or wasted mid-mission. */
-export function onPlayerDown() {
-  if (story.active) {
-    const stage = story.active.def.stages[story.stageAt];
-    if (stage.type === 'fight' || stage.type === 'race') failStage('You went down. The job restarts.');
-  }
-  endSideJob(false);
-}
-
-// ---------------------------------------------------------------- side jobs
-const side = { kind: null, phase: 0, x: 0, z: 0, dest: null, timer: 0, gateAt: 0, gates: null };
-
-function cornerNear() {
-  const xs = [-189, -133, -77, -21, 35, 91, 147];
-  const zs = [-189, -133, -77, -21, 35, 91, 147];
-  return { x: sideRng.pick(xs) + sideRng.pick([-9, 9]), z: sideRng.pick(zs) + sideRng.pick([-9, 9]) };
-}
-
-function offerSideJob() {
-  const p = cornerNear();
-  side.kind = sideRng.chance(0.55) ? 'taxi' : 'race';
-  side.phase = 0;
-  side.x = p.x;
-  side.z = p.z;
-  if (side.kind === 'race') {
-    side.x = PLACES.plaza.x;
-    side.z = PLACES.plaza.z - 14;
-  }
-}
-
-export function endSideJob(paid) {
-  side.kind = null;
-  side.phase = 0;
-  if (!story.active) hideBeacon();
-  if (paid) offerSideJobSoon();
-}
-let sideRespawn = 0;
-function offerSideJobSoon() {
-  sideRespawn = 14;
-}
-
-/** Markers for the minimap: story target in amber, side work in green. */
-export function getMarkers() {
-  const out = [];
-  if (story.active) {
-    const stage = story.active.def.stages[story.stageAt];
-    const p = stage.type === 'race' ? RACE_GATES[stage.gates][story.active.gateAt] : stagePoint(stage);
-    if (p) out.push({ x: p.x, z: p.z, color: '#ffd94d', kind: 'target' });
-  } else if (side.kind) {
-    const p = side.phase === 1 && side.dest ? side.dest : side;
-    out.push({ x: p.x, z: p.z, color: '#57c84d', kind: 'dot' });
-  }
-  return out;
-}
-
-// ------------------------------------------------------------------- update
-export function updateMissions(dt) {
-  // Offer the next story job.
-  if (!story.active && !story.done && story.index < MISSIONS.length && !story.offered) {
-    story.offered = true;
-    const def = MISSIONS[story.index];
-    ctx.banner('New job', `${def.from} has work: "${def.title}". Press J to take it.`, 5);
-  }
-  if (sideRespawn > 0) {
-    sideRespawn -= dt;
-    if (sideRespawn <= 0 && !side.kind) offerSideJob();
-  } else if (!side.kind && !story.active) {
-    offerSideJob();
-  }
-
-  const pos = ctx.playerPos();
-  const inCar = ctx.inCar();
-
-  // ----- story stages
-  if (story.active) {
-    const m = story.active;
-    const stage = m.def.stages[story.stageAt];
-    if (story.stageTimer !== null) {
-      story.stageTimer -= dt;
-      updateObjective();
-      if (story.stageTimer <= 0) {
-        failStage('Out of time.');
-        return;
+    for (let i = this.cases.length - 1; i >= 0; i--) {
+      const c = this.cases[i];
+      c.mesh.rotation.y += dt * 2;
+      c.mesh.position.y = 0.7 + Math.sin(performance.now() * 0.005 + i) * 0.15;
+      if (dist2d(g.player.pos, c.pos) < 2.6) {
+        const pay = 25 + Math.floor(Math.random() * 40);
+        g.addCash(pay);
+        g.save.couriers++;
+        g.persist();
+        g.sound.cash();
+        g.hud.message(`Courier case delivered: +$${pay}`, 3);
+        g.scene.remove(c.mesh);
+        this.cases.splice(i, 1);
       }
     }
-    const p = stagePoint(stage);
-    const dist = p ? Math.hypot(pos.x - p.x, pos.z - p.z) : Infinity;
-    switch (stage.type) {
-      case 'enterCar':
-        if (inCar) completeStage();
-        break;
-      case 'goto':
-        if (dist < stage.r) completeStage();
-        break;
-      case 'gotoCar':
-        if (inCar && dist < stage.r) completeStage();
-        break;
-      case 'pickup':
-        if (inCar && dist < stage.r) completeStage();
-        break;
-      case 'escape':
-        if (dist < stage.r) completeStage();
-        break;
-      case 'steal':
-        if (goldCar && ctx.playerCar() === goldCar) {
-          ctx.sfx('pickup');
-          completeStage();
-        } else if (p) setBeacon(p.x, p.z, 0xffd94d);
-        break;
-      case 'fight': {
-        const alive = combat.thugs.filter((t) => !t.dead).length;
-        const killed = stage.count - alive;
-        if (killed !== m.kills) {
-          m.kills = killed;
-          updateObjective();
-        }
-        if (alive === 0 && combat.thugs.length > 0) completeStage();
-        break;
-      }
-      case 'race': {
-        const gates = RACE_GATES[stage.gates];
-        const gate = gates[m.gateAt];
-        setBeacon(gate.x, gate.z, 0xffd94d);
-        if (inCar && Math.hypot(pos.x - gate.x, pos.z - gate.z) < 8.5) {
-          m.gateAt += 1;
-          ctx.sfx('checkpoint');
-          if (m.gateAt >= gates.length) completeStage();
-          else updateObjective();
-        }
-        break;
-      }
-    }
-    return;
-  }
 
-  // ----- side jobs (only while no story mission runs)
-  if (!side.kind) return;
-  if (side.kind === 'taxi') {
-    if (side.phase === 0) {
-      setBeacon(side.x, side.z, 0x57c84d);
-      if (inCar && Math.hypot(pos.x - side.x, pos.z - side.z) < 6.5 && Math.abs(ctx.playerSpeed()) < 1.5) {
-        side.phase = 1;
-        side.dest = cornerNear();
-        ctx.toast('Fare aboard — take them to the green marker');
-        ctx.sfx('pickup');
-        setBeacon(side.dest.x, side.dest.z, 0x57c84d);
-      }
-    } else if (side.dest) {
-      if (inCar && Math.hypot(pos.x - side.dest.x, pos.z - side.dest.z) < 7.5 && Math.abs(ctx.playerSpeed()) < 1.5) {
-        const fare = 45 + Math.round(Math.hypot(side.dest.x - side.x, side.dest.z - side.z) / 9);
-        ctx.addCash(fare);
-        ctx.sfx('cash');
-        ctx.toast(`Fare paid $${fare}`);
-        endSideJob(true);
-      }
-    }
-  } else if (side.kind === 'race') {
-    if (side.phase === 0) {
-      setBeacon(side.x, side.z, 0x57c84d);
-      if (inCar && Math.hypot(pos.x - side.x, pos.z - side.z) < 8) {
-        side.phase = 1;
-        side.gates = RACE_GATES.street;
-        side.gateAt = 0;
-        side.timer = 62;
-        ctx.toast('Gate Run! Beat the clock through 6 gates');
-        ctx.sfx('mission');
-      }
-    } else if (side.gates) {
-      side.timer -= dt;
-      const gate = side.gates[side.gateAt];
-      setBeacon(gate.x, gate.z, 0x57c84d);
-      ctx.setObjective(`Gate Run — Gate ${side.gateAt + 1}/${side.gates.length} · ${Math.ceil(side.timer)}s`);
-      if (side.timer <= 0) {
-        ctx.toast('Gate Run failed — out of time');
-        ctx.sfx('fail');
-        ctx.setObjective(null);
-        endSideJob(true);
-      } else if (inCar && Math.hypot(pos.x - gate.x, pos.z - gate.z) < 8.5) {
-        side.gateAt += 1;
-        ctx.sfx('checkpoint');
-        if (side.gateAt >= side.gates.length) {
-          const bonus = Math.round(side.timer) * 2;
-          ctx.addCash(120 + bonus);
-          ctx.sfx('cash');
-          ctx.toast(`Gate Run complete! $${120 + bonus}`);
-          ctx.setObjective(null);
-          endSideJob(true);
+    // Taxi fares.
+    if (!this.fare) {
+      // Occasionally a pedestrian starts hailing.
+      if (Math.random() < dt * 0.05) {
+        const peds = g.peds.peds.filter((p) => p.state === 'walk');
+        if (peds.length) {
+          const ped = peds[Math.floor(Math.random() * peds.length)];
+          ped.state = 'hail';
+          ped.stateT = 0;
+          this.fare = { ped, dest: null, state: 'hail' };
+          g.hud.message('Someone is hailing a ride nearby — stop beside them in a car.', 5);
         }
       }
+    } else if (this.fare.state === 'hail') {
+      const ped = this.fare.ped;
+      if (ped.dead || ped.state === 'down') {
+        this.fare = null;
+      } else if (g.player.inCar && dist2d(g.player.pos, ped.pos) < 6 && Math.abs(g.player.inCar.speed) < 1.2) {
+        ped.state = 'ride';
+        this.fare.state = 'ride';
+        const L = g.landmarks;
+        const dests = [L.downtown, L.marina, L.boardwalk, L.airport, L.hideout, L.garage];
+        this.fare.dest = dests[Math.floor(Math.random() * dests.length)];
+        g.hud.message(`Fare: take them to ${this.fare.dest.name}.`, 5);
+        g.sound.pickup();
+      }
+    } else if (this.fare.state === 'ride') {
+      const ped = this.fare.ped;
+      ped.pos.copy(g.player.pos);
+      if (g.player.inCar && dist2d(g.player.pos, this.fare.dest) < 9 && Math.abs(g.player.inCar.speed) < 1.5) {
+        const fare = 45 + Math.floor(Math.random() * 55);
+        g.addCash(fare);
+        g.save.taxiFares++;
+        g.persist();
+        g.sound.cash();
+        g.hud.centre('FARE PAID  +$' + fare);
+        ped.state = 'walk';
+        ped.stateT = 0;
+        ped.mesh.visible = true;
+        ped.pos.set(g.player.pos.x + 2.5, 0, g.player.pos.z + 1);
+        ped.snapToWalkLine();
+        this.fare = null;
+      }
     }
   }
-}
 
-/** J key: accept the offered story job. */
-export function acceptOffered() {
-  if (!story.active && story.offered && story.index < MISSIONS.length) {
-    hideBeacon();
-    startMission(story.index);
-    return true;
+  objectivePos() {
+    if (this.fare && this.fare.state === 'hail') return this.fare.ped.pos;
+    if (this.fare && this.fare.state === 'ride') return this.fare.dest;
+    return null;
   }
-  return false;
-}
-
-/** For screenshots and debugging: force-start a story mission by index. */
-export function debugStartMission(i) {
-  story.index = i;
-  story.offered = true;
-  startMission(i);
-}
-
-export function missionStateForSave() {
-  return { index: story.index, done: story.done };
-}
-export function restoreMissionState(s) {
-  if (!s) return;
-  story.index = s.index ?? 0;
-  story.done = s.done ?? false;
 }

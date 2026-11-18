@@ -1,43 +1,40 @@
-// A small deterministic random generator. The city is built from a seed so
-// every visit (and every screenshot) shows the same Palm Haven, while the
-// living traffic and crowds still roll their own dice at run time.
+// rng.js — deterministic seeded randomness for Palm Haven Heat.
+// The whole city is generated from one seed so every player (and every
+// screenshot) sees the same Palm Haven. A tiny linear congruential
+// generator is plenty for layout work and keeps us dependency-free.
 
-export function mulberry32(seed) {
-  let a = seed >>> 0;
-  return function next() {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+export function makeRng(seed) {
+  let state = (seed >>> 0) || 1;
+  const next = () => {
+    // Numerical Recipes LCG constants.
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+  return {
+    next,
+    range(min, max) {
+      return min + (max - min) * next();
+    },
+    int(min, max) {
+      return Math.floor(min + next() * (max - min + 1));
+    },
+    pick(list) {
+      return list[Math.floor(next() * list.length) % list.length];
+    },
+    chance(p) {
+      return next() < p;
+    },
+    // Symmetric jitter around zero, handy for placing props.
+    spread(amount) {
+      return (next() * 2 - 1) * amount;
+    },
   };
 }
 
-export class Rng {
-  constructor(seed) {
-    this.next = mulberry32(seed);
-  }
-  /** Float in [min, max). */
-  range(min, max) {
-    return min + this.next() * (max - min);
-  }
-  /** Integer in [min, max] inclusive. */
-  int(min, max) {
-    return Math.floor(this.range(min, max + 1));
-  }
-  pick(list) {
-    return list[Math.floor(this.next() * list.length)];
-  }
-  chance(p) {
-    return this.next() < p;
-  }
-  /** Shuffle a copy of a list. */
-  shuffled(list) {
-    const out = list.slice();
-    for (let i = out.length - 1; i > 0; i--) {
-      const j = Math.floor(this.next() * (i + 1));
-      [out[i], out[j]] = [out[j], out[i]];
-    }
-    return out;
-  }
+// A stable hash of two grid coordinates, so city blocks can roll their
+// own dice without depending on generation order.
+export function hash2(a, b) {
+  let h = (a * 374761393 + b * 668265263) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 }

@@ -1,80 +1,64 @@
-// Palm Haven Heat — the hand-in program.
+// Palm Haven Heat — hand-in program (Node 22, standard library only).
 //
-// What this file does, and all it does: take the finished game (the static
-// files under game/) and its screenshots (under screenshots/), copy them
-// into the output directory the grader points at, and write the dossier
-// the judge reads, using the kit's own dossier library so the bytes match
-// what the gate rebuilds for itself.
+// What this does, and all it does: take the finished game that lives in
+// game/ beside this file, plus the maker's screenshots/ folder, copy
+// both into the output directory the grader points at, and write the
+// dossier the judge reads, using the kit's own buildDossier library so
+// the bytes match the scorer's rebuild exactly.
 //
-//   node main.ts                          → writes to /output
-//   MAKEFUN_OUTPUT_DIR=out node main.ts   → writes to ./out (local check)
+//   node main.ts                          -> writes to /output
+//   MAKEFUN_OUTPUT_DIR=out node main.ts   -> writes to ./out instead
 //
-// The caps below are the scorer's, restated: if the game ever outgrows
-// them this program refuses loudly instead of handing in a dead entry.
+// The grader runs this twice and compares the two outputs byte for
+// byte, so the copy below first removes whatever a previous run left
+// in the game/ and screenshots/ corners of the output: a clean slate
+// every time, no stale file can leak from one run into the next.
 
-import { existsSync, mkdirSync, readdirSync, statSync, copyFileSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
-const CAPS = {
-  textBytes: 163840,        // dossier text cap the judge's outline is cut from
-  maxShots: 4,              // screenshots the dossier may carry
-  shotBytes: 262144,        // 256 KiB per screenshot
-  gameFiles: 993,           // files + directories under game/
-  gameBytes: 50331648,      // 48 MiB of game in all
-  gamePathBytes: 1000,      // longest single path under game/
+// The caps the gate enforces, mirrored here so buildDossier refuses
+// early — with a clear error — anything the scorer would refuse later.
+const GATE_CAPS = {
+  text_max_bytes: 163_840,
+  screenshots: { max: 4, max_bytes: 262_144 },
+  game_max_files: 993,
+  game_max_bytes: 50_331_648,
+  game_path_max_bytes: 1_000,
 };
 
-const root = fileURLToPath(new URL('.', import.meta.url));
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+function repoRoot(): string {
+  // This file sits at the repository root; game/ and screenshots/ are
+  // its neighbours.
+  return fileURLToPath(new URL('.', import.meta.url));
+}
 
-/** Copy a directory tree file by file, counting entries as we go. */
-function copyTree(fromDir: string, toDir: string, counter: { files: number; bytes: number }): void {
-  mkdirSync(toDir, { recursive: true });
-  for (const name of readdirSync(fromDir)) {
-    const from = join(fromDir, name);
-    const to = join(toDir, name);
-    const info = statSync(from);
-    if (info.isDirectory()) {
-      counter.files += 1;
-      copyTree(from, to, counter);
-    } else if (info.isFile()) {
-      counter.files += 1;
-      counter.bytes += info.size;
-      copyFileSync(from, to);
-    }
+function outputDir(): string {
+  return process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+}
+
+function copyTreeFresh(from: string, to: string): void {
+  // Remove the destination first: the second grader run must produce
+  // exactly the bytes the first one did.
+  rmSync(to, { recursive: true, force: true });
+  mkdirSync(to, { recursive: true });
+  if (existsSync(from)) {
+    cpSync(from, to, { recursive: true });
   }
 }
 
 function main(): void {
-  const gameDir = join(root, 'game');
-  const shotsDir = join(root, 'screenshots');
-  if (!existsSync(join(gameDir, 'index.html'))) {
-    throw new Error('game/index.html is missing: there is no game to hand in');
-  }
+  const root = repoRoot();
+  const out = outputDir();
+  mkdirSync(out, { recursive: true });
 
-  mkdirSync(outDir, { recursive: true });
+  copyTreeFresh(join(root, 'game'), join(out, 'game'));
+  copyTreeFresh(join(root, 'screenshots'), join(out, 'screenshots'));
 
-  const gameCount = { files: 0, bytes: 0 };
-  copyTree(gameDir, join(outDir, 'game'), gameCount);
-  if (gameCount.files > CAPS.gameFiles) throw new Error(`game/ holds ${gameCount.files} entries, over the ${CAPS.gameFiles} cap`);
-  if (gameCount.bytes > CAPS.gameBytes) throw new Error(`game/ is ${gameCount.bytes} bytes, over the ${CAPS.gameBytes} cap`);
-
-  const shotCount = { files: 0, bytes: 0 };
-  if (existsSync(shotsDir)) {
-    copyTree(shotsDir, join(outDir, 'screenshots'), shotCount);
-  }
-
-  const dossier = buildDossier(outDir, {
-    text_max_bytes: CAPS.textBytes,
-    screenshots: { max: CAPS.maxShots, max_bytes: CAPS.shotBytes },
-    game_max_files: CAPS.gameFiles,
-    game_max_bytes: CAPS.gameBytes,
-    game_path_max_bytes: CAPS.gamePathBytes,
-  });
-  writeFileSync(join(outDir, 'dossier.json'), dossier);
-  console.log(`handed in: ${gameCount.files} game files (${gameCount.bytes} bytes), ${shotCount.files} screenshots, dossier ${dossier.length} bytes → ${outDir}`);
+  const dossier = buildDossier(out, GATE_CAPS);
+  writeFileSync(join(out, 'dossier.json'), dossier);
 }
 
 main();

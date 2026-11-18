@@ -1,33 +1,48 @@
-// Persistence: one localStorage record — cash, reputation, story progress,
-// the pistol, and where Jax woke up. Continue reads it; New Game clears it.
-const KEY = 'palm-haven-heat-save-v1';
+// save.js — localStorage persistence for Palm Haven Heat.
+// We save the story progress, cash, lifetime stats and where the player
+// parked themselves, so the title screen can offer "Continue".
+
+const SAVE_KEY = 'palm-haven-heat-save-v1';
+
+export function defaultSave() {
+  return {
+    cash: 120,
+    missionIndex: 0, // next story mission to play
+    storyDone: false,
+    taxiFares: 0,
+    couriers: 0,
+    carsStolen: 0,
+    timesBusted: 0,
+    timesWasted: 0,
+    position: null, // {x, z, heading}
+    playSeconds: 0,
+  };
+}
 
 export function loadSave() {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
     const data = JSON.parse(raw);
     if (typeof data !== 'object' || data === null) return null;
-    return data;
-  } catch {
+    return Object.assign(defaultSave(), data);
+  } catch (err) {
     return null;
   }
 }
 
-export function writeSave(data) {
+export function storeSave(data) {
   try {
-    localStorage.setItem(KEY, JSON.stringify(data));
-  } catch {
-    // Private mode or a full disk: the run simply will not persist.
+    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+  } catch (err) {
+    // Private mode or quota: saving is a nicety, never fatal.
   }
 }
 
-export function clearSave() {
+export function wipeSave() {
   try {
-    localStorage.removeItem(KEY);
-  } catch { /* nothing to clear */ }
-}
-
-export function hasSave() {
-  return loadSave() !== null;
+    localStorage.removeItem(SAVE_KEY);
+  } catch (err) {
+    /* ignore */
+  }
 }

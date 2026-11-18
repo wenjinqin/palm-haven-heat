@@ -1,155 +1,123 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Palm Haven Heat — an open-world crime game</title>
 <style>
-  :root {
-    --amber: #ffd94d;
-    --ink: rgba(10, 16, 22, 0.72);
-    --paper: #f5efe2;
-  }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b1620; }
-  body { font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif; color: var(--paper); }
-  canvas.webgl { display: block; width: 100%; height: 100%; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #1b2a3a; }
+  body { font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif; color: #fff; }
+  #app, #app canvas { width: 100%; height: 100%; display: block; }
 
   /* ---------- HUD ---------- */
-  #hud { display: none; position: fixed; inset: 0; pointer-events: none; z-index: 5; }
-  #minimap-wrap { position: absolute; top: 16px; right: 16px; text-align: center; }
-  #minimap { width: 190px; height: 190px; border-radius: 14px; border: 2px solid rgba(255,255,255,0.35); box-shadow: 0 6px 24px rgba(0,0,0,0.45); background: #274b63; }
-  #clock { margin-top: 5px; font-weight: 700; letter-spacing: 2px; font-size: 15px; text-shadow: 0 1px 3px #000; }
-  #stats { position: absolute; top: 16px; left: 16px; background: var(--ink); border-radius: 12px; padding: 10px 16px; box-shadow: 0 6px 24px rgba(0,0,0,0.4); }
-  #cash { font-size: 26px; font-weight: 800; color: #7fe0a8; line-height: 1; }
-  #rep { margin-top: 4px; font-size: 13px; font-weight: 700; letter-spacing: 2px; color: var(--amber); }
-  #stars { position: absolute; top: 118px; left: 16px; font-size: 27px; letter-spacing: 3px; text-shadow: 0 2px 5px #000; }
-  #healthwrap { position: absolute; left: 16px; bottom: 18px; width: 240px; background: var(--ink); border-radius: 10px; padding: 9px 12px; }
-  #healthwrap .label { font-size: 11px; letter-spacing: 2px; font-weight: 700; opacity: 0.85; }
-  .track { height: 12px; border-radius: 6px; background: rgba(255,255,255,0.18); overflow: hidden; margin-top: 4px; }
-  #healthfill { height: 100%; width: 100%; background: #57c84d; border-radius: 6px; transition: width 0.15s; }
-  #armorwrap { display: none; }
-  #bustwrap { position: absolute; left: 50%; bottom: 120px; transform: translateX(-50%); width: 300px; display: none; background: var(--ink); border-radius: 10px; padding: 8px 12px; text-align: center; }
-  #bustwrap .label { color: #ff7a6b; font-weight: 800; letter-spacing: 3px; font-size: 13px; }
-  #bustfill { height: 100%; width: 0%; background: #e23b2e; border-radius: 6px; }
-  #speedo { position: absolute; right: 16px; bottom: 18px; display: none; background: var(--ink); border-radius: 12px; padding: 10px 16px; font-size: 30px; font-weight: 800; }
-  #speedo small { font-size: 13px; font-weight: 600; opacity: 0.8; margin-left: 6px; }
-  #objective { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); max-width: 560px; background: var(--ink); border-left: 4px solid var(--amber); border-radius: 8px; padding: 9px 16px; font-size: 16px; font-weight: 600; display: none; text-align: center; }
-  #banner { position: absolute; top: 24%; left: 50%; transform: translateX(-50%); width: min(680px, 90vw); text-align: center; opacity: 0; transition: opacity 0.5s; text-shadow: 0 2px 10px rgba(0,0,0,0.8); }
-  #banner-title { font-size: 40px; font-weight: 900; letter-spacing: 1px; color: var(--amber); text-transform: uppercase; }
-  #banner-sub { margin-top: 8px; font-size: 18px; line-height: 1.45; background: var(--ink); border-radius: 10px; padding: 10px 18px; display: inline-block; }
-  #banner-sub:empty { display: none; }
-  #prompt { position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%); background: var(--ink); border-radius: 999px; padding: 9px 20px; font-size: 16px; font-weight: 700; display: none; }
-  #prompt b { color: var(--amber); }
-  #toast { position: absolute; left: 50%; bottom: 170px; transform: translateX(-50%); background: var(--ink); border-radius: 999px; padding: 8px 18px; font-size: 15px; font-weight: 600; opacity: 0; transition: opacity 0.4s; }
-  #crosshair { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 22px; color: rgba(255,255,255,0.9); text-shadow: 0 0 4px #000; display: none; }
-  #vignette { position: fixed; inset: 0; pointer-events: none; z-index: 6; opacity: 0; transition: opacity 0.25s; background: radial-gradient(ellipse at center, transparent 52%, rgba(200, 20, 10, 0.55) 100%); }
+  #hud { position: fixed; inset: 0; pointer-events: none; display: none; }
+  #top-right { position: absolute; top: 16px; right: 20px; text-align: right; }
+  #cash { font-size: 30px; font-weight: 800; color: #7dff9a; text-shadow: 0 2px 6px rgba(0,0,0,.55); letter-spacing: .5px; }
+  #stars { font-size: 26px; color: #ffd60a; text-shadow: 0 2px 6px rgba(0,0,0,.6); letter-spacing: 3px; transition: opacity .3s; }
+  #clock { font-size: 20px; font-weight: 700; color: #ffe9a8; text-shadow: 0 2px 5px rgba(0,0,0,.6); margin-top: 2px; }
+  #bottom-left { position: absolute; left: 20px; bottom: 20px; width: 230px; }
+  .bar { height: 13px; background: rgba(0,0,0,.5); border: 1px solid rgba(255,255,255,.35); border-radius: 6px; overflow: hidden; margin-top: 5px; }
+  .bar > div { height: 100%; transition: width .18s; }
+  #health-fill { background: #3ddc84; width: 100%; }
+  #armour-fill { background: #6cb4ff; width: 0%; }
+  .bar-label { font-size: 11px; letter-spacing: 2px; opacity: .85; text-shadow: 0 1px 3px #000; }
+  #bottom-right { position: absolute; right: 20px; bottom: 20px; text-align: right; }
+  #minimap { width: 190px; height: 190px; border-radius: 50%; border: 3px solid rgba(255,255,255,.5); box-shadow: 0 4px 18px rgba(0,0,0,.5); background: #274b63; }
+  #weapon { font-size: 17px; font-weight: 700; letter-spacing: 1px; margin-top: 7px; text-shadow: 0 2px 5px rgba(0,0,0,.7); }
+  #speedo { font-size: 15px; opacity: .9; text-shadow: 0 2px 5px rgba(0,0,0,.7); height: 20px; }
+  #objective { position: absolute; top: 16px; left: 20px; max-width: 380px; background: rgba(10,16,24,.55); border-left: 4px solid #ffd60a; padding: 9px 13px; border-radius: 0 8px 8px 0; display: none; }
+  #objective-title { font-size: 13px; letter-spacing: 2px; color: #ffd60a; font-weight: 800; text-transform: uppercase; }
+  #objective .obj-text { font-size: 15px; margin-top: 2px; line-height: 1.35; }
+  #message { position: absolute; top: 86px; left: 50%; transform: translateX(-50%); font-size: 17px; font-weight: 600; background: rgba(10,16,24,.55); padding: 8px 18px; border-radius: 20px; opacity: 0; transition: opacity .4s; white-space: nowrap; }
+  #subtitle { position: absolute; bottom: 108px; left: 50%; transform: translateX(-50%); max-width: 640px; text-align: center; font-size: 18px; line-height: 1.4; opacity: 0; transition: opacity .3s; text-shadow: 0 2px 6px #000; }
+  #sub-name { color: #ffd60a; font-weight: 800; margin-right: 8px; }
+  #centre { position: absolute; top: 34%; left: 50%; transform: translate(-50%,-50%); font-size: 44px; font-weight: 900; letter-spacing: 3px; color: #ffd60a; text-shadow: 0 4px 18px rgba(0,0,0,.75); opacity: 0; transition: opacity .35s; white-space: nowrap; }
+  #prompt { position: absolute; bottom: 150px; left: 50%; transform: translateX(-50%); font-size: 17px; font-weight: 700; background: rgba(10,16,24,.6); padding: 6px 16px; border-radius: 16px; opacity: 0; transition: opacity .25s; }
+  #busted-wrap { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); width: 300px; display: none; text-align: center; }
+  #busted-wrap .bar-label { color: #7db8ff; font-weight: 800; }
+  #busted-bar { height: 10px; background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.4); border-radius: 5px; overflow: hidden; margin-top: 3px; }
+  #busted-fill { height: 100%; width: 0%; background: #4da3ff; }
+  #crosshair { position: absolute; top: 50%; left: 50%; width: 6px; height: 6px; margin: -3px; border-radius: 50%; background: rgba(255,255,255,.85); box-shadow: 0 0 6px rgba(0,0,0,.8); }
+  #hurt-flash { position: fixed; inset: 0; background: radial-gradient(ellipse at center, transparent 55%, rgba(255,30,20,.5) 100%); opacity: 0; transition: opacity .12s; pointer-events: none; }
 
   /* ---------- Screens ---------- */
-  .screen { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center; background: linear-gradient(180deg, rgba(8, 20, 34, 0.25) 0%, rgba(8, 20, 34, 0.78) 78%); }
-  .panel { width: min(680px, 92vw); max-height: 92vh; overflow: auto; background: rgba(10, 18, 26, 0.88); border: 1px solid rgba(255, 217, 77, 0.35); border-radius: 18px; padding: 34px 40px; text-align: center; box-shadow: 0 24px 70px rgba(0,0,0,0.6); }
-  .panel h1 { margin: 0; font-size: 56px; font-weight: 900; letter-spacing: 1px; line-height: 0.98; color: #fff; text-transform: uppercase; }
-  .panel h1 .heat { color: var(--amber); }
-  .tagline { margin-top: 8px; font-size: 16px; letter-spacing: 3px; text-transform: uppercase; color: #9fd4e8; }
-  .story { margin: 20px auto 6px; max-width: 540px; font-size: 16.5px; line-height: 1.55; color: #e8e2d2; }
-  .buttons { margin: 24px 0 6px; display: flex; gap: 14px; justify-content: center; }
-  button { pointer-events: auto; cursor: pointer; border: 0; border-radius: 999px; padding: 13px 30px; font-size: 17px; font-weight: 800; letter-spacing: 0.4px; background: var(--amber); color: #231a04; box-shadow: 0 6px 18px rgba(0,0,0,0.4); }
-  button:hover { filter: brightness(1.08); }
-  button.ghost { background: transparent; color: var(--paper); border: 2px solid rgba(255,255,255,0.4); }
-  .controls { margin: 22px auto 0; max-width: 520px; display: grid; grid-template-columns: 1fr 1fr; gap: 5px 22px; text-align: left; font-size: 14.5px; color: #cfd8dc; }
-  .controls b { color: #fff; font-weight: 700; }
-  .foot { margin-top: 22px; font-size: 12.5px; color: rgba(255,255,255,0.5); line-height: 1.5; }
-  #pause-screen, #end-screen { display: none; }
-  #end-title { font-size: 48px; }
+  .screen { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; background: linear-gradient(180deg, rgba(16,24,40,.25) 0%, rgba(16,24,40,.55) 78%, rgba(10,10,20,.8) 100%); z-index: 5; }
+  .game-title { font-size: 84px; font-weight: 900; letter-spacing: 2px; line-height: .95;
+    background: linear-gradient(180deg, #ffe259 15%, #ffa751 55%, #ff5d8f 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    filter: drop-shadow(0 6px 22px rgba(0,0,0,.6)); }
+  .game-sub { font-size: 19px; letter-spacing: 6px; margin-top: 10px; color: #eaf6ff; text-shadow: 0 2px 8px #000; text-transform: uppercase; }
+  .blurb { margin-top: 18px; max-width: 560px; font-size: 16px; line-height: 1.55; color: #f3f7ff; text-shadow: 0 2px 6px #000; }
+  .buttons { margin-top: 30px; display: flex; gap: 14px; }
+  button { pointer-events: auto; cursor: pointer; font: inherit; font-size: 18px; font-weight: 800; letter-spacing: 1px; padding: 13px 34px; border-radius: 30px; border: 2px solid rgba(255,255,255,.65); background: rgba(255,93,143,.85); color: #fff; box-shadow: 0 6px 18px rgba(0,0,0,.45); }
+  button:hover { background: rgba(255,93,143,1); transform: translateY(-1px); }
+  button.ghost { background: rgba(20,30,45,.65); }
+  .controls { margin-top: 34px; font-size: 14px; line-height: 1.9; color: #dfeefc; text-shadow: 0 1px 4px #000; }
+  .controls b { color: #ffd60a; }
+  .big-word { font-size: 76px; font-weight: 900; letter-spacing: 6px; text-shadow: 0 6px 24px rgba(0,0,0,.8); }
+  .down-text { margin-top: 12px; font-size: 18px; text-shadow: 0 2px 6px #000; }
 </style>
-<script type="importmap">
-{ "imports": { "three": "./vendor/three.module.min.js" } }
-</script>
 </head>
 <body>
 <div id="app"></div>
-<div id="vignette"></div>
+<div id="hurt-flash"></div>
 
 <div id="hud">
-  <div id="stats">
+  <div id="objective"><div id="objective-title"></div><div class="obj-text"></div></div>
+  <div id="top-right">
     <div id="cash">$0</div>
-    <div id="rep">REP 0</div>
+    <div id="stars">☆☆☆☆☆</div>
+    <div id="clock"></div>
   </div>
-  <div id="stars">☆☆☆☆☆</div>
-  <div id="minimap-wrap">
-    <canvas id="minimap" width="190" height="190"></canvas>
-    <div id="clock">17:40</div>
-  </div>
-  <div id="healthwrap">
-    <div class="label">JAX MARLOWE</div>
-    <div class="track"><div id="healthfill"></div></div>
-    <div id="armorwrap"><div class="track"><div id="armorfill"></div></div></div>
-  </div>
-  <div id="bustwrap">
-    <div class="label">BUSTED</div>
-    <div class="track"><div id="bustfill"></div></div>
-  </div>
-  <div id="speedo"></div>
-  <div id="objective"></div>
-  <div id="banner"><div id="banner-title"></div><div id="banner-sub"></div></div>
-  <div id="toast"></div>
+  <div id="message"></div>
+  <div id="busted-wrap"><div class="bar-label">BUSTED</div><div id="busted-bar"><div id="busted-fill"></div></div></div>
+  <div id="centre"></div>
+  <div id="subtitle"><span id="sub-name"></span><span class="sub-text"></span></div>
   <div id="prompt"></div>
-  <div id="crosshair">＋</div>
+  <div id="bottom-left">
+    <div class="bar-label">HEALTH</div>
+    <div class="bar"><div id="health-fill"></div></div>
+    <div class="bar-label" style="margin-top:6px">ARMOUR</div>
+    <div class="bar"><div id="armour-fill"></div></div>
+  </div>
+  <div id="bottom-right">
+    <canvas id="minimap" width="190" height="190"></canvas>
+    <div id="weapon"></div>
+    <div id="speedo"></div>
+  </div>
+  <div id="crosshair"></div>
 </div>
 
-<div id="title-screen" class="screen">
-  <div class="panel">
-    <h1>Palm Haven <span class="heat">Heat</span></h1>
-    <div class="tagline">An open-world crime story</div>
-    <p class="story">Six years ago Jax Marlowe left Palm Haven with nothing. Now the debts
-      are called, the Vane family owns half the docks, and fixer Sol Ferreira is the only
-      friend still answering the phone. Take the jobs. Outrun the PHPD. Steal back the city —
-      one sun-soaked street at a time.</p>
-    <div class="buttons">
-      <button id="btn-new">New Game</button>
-      <button id="btn-continue" class="ghost" style="display:none">Continue</button>
-    </div>
-    <div class="controls">
-      <div><b>W A S D</b> — move / drive</div>
-      <div><b>Mouse</b> — look · <b>Click</b> — punch / shoot</div>
-      <div><b>F</b> — enter / exit a car</div>
-      <div><b>Shift</b> — sprint · <b>Space</b> — handbrake</div>
-      <div><b>J</b> — take Sol's job</div>
-      <div><b>P</b> — pause · <b>M</b> — mute</div>
-    </div>
-    <div class="foot">A complete city: traffic, crowds, a wanted system with real pursuits, six story
-      missions, cab fares and gate runs, a paint shop that launders heat, and a save that remembers.
-      Everything original — city, people, cars and crimes invented for Palm Haven.</div>
+<div id="title-screen" class="screen" style="display:flex">
+  <div class="game-title">PALM HAVEN<br>HEAT</div>
+  <div class="game-sub">An open-world crime story</div>
+  <p class="blurb">Dax Marlin just rolled into Palm Haven with empty pockets and a
+  borrowed name. Wheelman work for fixer Lola Ferreira pays the rent — stealing cars,
+  running hot packages, outrunning the Palm Haven PD under a setting sun.</p>
+  <div class="buttons">
+    <button id="btn-new">NEW GAME</button>
+    <button id="btn-continue" class="ghost">CONTINUE</button>
+  </div>
+  <div class="controls">
+    <b>WASD</b> move / drive &nbsp;·&nbsp; <b>Shift</b> sprint &nbsp;·&nbsp; <b>E</b> enter / exit car<br>
+    <b>Mouse drag</b> camera &nbsp;·&nbsp; <b>Hold click</b> aim + shoot &nbsp;·&nbsp; <b>R</b> reload<br>
+    <b>Space</b> handbrake &nbsp;·&nbsp; <b>P</b> pause &nbsp;·&nbsp; <b>M</b> mute
   </div>
 </div>
 
 <div id="pause-screen" class="screen">
-  <div class="panel">
-    <h1>Paused</h1>
-    <p class="story">Palm Haven waits for no one. Well — just this once.</p>
-    <div class="buttons">
-      <button id="btn-resume">Keep Driving</button>
-      <button id="btn-quit" class="ghost">Title Screen</button>
-    </div>
-    <div class="controls">
-      <div><b>W A S D</b> — move / drive</div>
-      <div><b>F</b> — enter / exit a car</div>
-      <div><b>Click</b> — punch / shoot</div>
-      <div><b>J</b> — take Sol's job</div>
-    </div>
-  </div>
+  <div class="big-word" style="color:#fff">PAUSED</div>
+  <div class="buttons"><button id="btn-resume">RESUME</button></div>
 </div>
 
-<div id="end-screen" class="screen">
-  <div class="panel">
-    <h1 id="end-title">Busted</h1>
-    <p class="story" id="end-text"></p>
-    <div class="buttons">
-      <button id="btn-respawn">Back on the Street</button>
-    </div>
-  </div>
+<div id="down-screen" class="screen">
+  <div id="down-title" class="big-word">BUSTED</div>
+  <div id="down-text" class="down-text"></div>
+  <div class="buttons"><button id="btn-respawn">BACK ON THE STREET</button></div>
 </div>
 
-<script type="module" src="./src/main.js"></script>
+<script src="vendor/three.min.js"></script>
+<script type="module" src="src/main.js"></script>
 </body>
 </html>

@@ -1,147 +1,306 @@
-// The Palm Haven PD: the wanted-level model (what raises it, how it cools
-// down) and the cruiser AI that hunts the player across the grid. Cruisers
-// drive the same arcade physics as everyone else and try to box the
-// player in; the bust falls out of proximity and speed, not a script.
-import { CFG } from './config.js';
-import { AVENUES_X, STREETS_Z } from './layout.js';
-import { makeCar, placeCar, stepCar } from './vehicles.js';
+// police.js — Palm Haven PD. A heat-based wanted system (crimes add
+// heat, stars follow, hiding lets it cool) plus the response: patrol
+// interceptors that hunt the player across the grid, foot officers
+// who pile out near a cornered suspect, and the busted meter that
+// fills when an officer is close and the player is going nowhere.
 
-export const wanted = {
-  stars: 0,
-  bustMeter: 0,       // 0..1, fills when a cruiser is close and you are slow
-  unseenTime: 0,      // seconds since any unit had eyes on the player
-  drainTime: 0,
-  units: [],
-  onBusted: null,     // assigned by main
-  flashClock: 0,
+import { Car } from './vehicle.js';
+import { ROAD_XS, ROAD_ZS } from './city.js';
+
+const THREE = window.THREE;
+
+const CRIME_HEAT = {
+  theft: 2.2,
+  pedHit: 2.6,
+  shot: 0.7,
+  copRam: 2.4,
+  copDown: 4.5,
+  carSmash: 0.8,
+  mission: 2.0,
+  brandish: 0.5,
 };
 
-let scene = null;
-export function initPolice(s) {
-  scene = s;
-}
+export class Wanted {
+  constructor() {
+    this.heat = 0;
+    this.sinceCrime = 99;
+    this.totalCrimes = 0;
+  }
 
-/** Register a crime: wanted rises to at least `level` (capped at 5). */
-export function reportCrime(level) {
-  const next = Math.min(5, Math.max(wanted.stars, level));
-  if (next !== wanted.stars) {
-    wanted.stars = next;
-    wanted.drainTime = 0;
+  get stars() {
+    if (this.heat <= 0.2) return 0;
+    return Math.min(5, Math.ceil(this.heat / 2));
+  }
+
+  report(kind) {
+    const add = CRIME_HEAT[kind] || 1;
+    this.heat = Math.min(10, this.heat + add);
+    this.sinceCrime = 0;
+    this.totalCrimes++;
+  }
+
+  clear() {
+    this.heat = 0;
+    this.sinceCrime = 99;
+  }
+
+  update(dt, anyCopNear) {
+    this.sinceCrime += dt;
+    if (this.heat > 0 && this.sinceCrime > 6 && !anyCopNear) {
+      this.heat = Math.max(0, this.heat - dt * (this.heat > 5 ? 0.1 : 0.2));
+    }
   }
 }
 
-export function clearWanted() {
-  wanted.stars = 0;
-  wanted.bustMeter = 0;
-  wanted.unseenTime = 0;
-  wanted.drainTime = 0;
+function buildCopMesh() {
+  const g = new THREE.Group();
+  const navy = new THREE.MeshLambertMaterial({ color: 0x1f3a93 });
+  const skin = new THREE.MeshLambertMaterial({ color: 0xe0ac69 });
+  const legGeo = new THREE.BoxGeometry(0.17, 0.8, 0.19);
+  legGeo.translate(0, -0.4, 0);
+  const legL = new THREE.Mesh(legGeo, navy);
+  legL.position.set(-0.11, 0.82, 0);
+  const legR = new THREE.Mesh(legGeo, navy);
+  legR.position.set(0.11, 0.82, 0);
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.64, 0.27), navy);
+  torso.position.y = 1.15;
+  const armGeo = new THREE.BoxGeometry(0.12, 0.62, 0.14);
+  armGeo.translate(0, -0.31, 0);
+  const armL = new THREE.Mesh(armGeo, navy);
+  armL.position.set(-0.34, 1.42, 0);
+  const armR = new THREE.Mesh(armGeo, navy);
+  armR.position.set(0.34, 1.42, 0);
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.31, 0.35, 0.31), skin);
+  head.position.y = 1.66;
+  const cap = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.1, 0.36), navy);
+  cap.position.y = 1.88;
+  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.14, 0.34), new THREE.MeshLambertMaterial({ color: 0x1c1e24 }));
+  gun.position.set(0, -0.6, 0.12);
+  armR.add(gun);
+  g.add(legL, legR, torso, armL, armR, head, cap);
+  g.userData.parts = { legL, legR, armL, armR };
+  return g;
 }
 
-export function setStars(n) {
-  wanted.stars = Math.max(0, Math.min(5, n));
-}
-
-function spawnUnit(player) {
-  // Appear on a street 80–120 m away, pointed at the player.
-  const angle = Math.random() * Math.PI * 2;
-  const dist = 85 + Math.random() * 35;
-  let x = player.x + Math.sin(angle) * dist;
-  let z = player.z + Math.cos(angle) * dist;
-  // Snap to the nearest street centre so they arrive on a road.
-  const snap = (v, lines) => lines.reduce((a, b) => (Math.abs(b - v) < Math.abs(a - v) ? b : a), lines[0]);
-  if (Math.random() < 0.5) x = snap(x, AVENUES_X);
-  else z = snap(z, STREETS_Z);
-  x = Math.max(-205, Math.min(200, x));
-  z = Math.max(-205, Math.min(205, z));
-  const car = makeCar('police', 0xffffff);
-  car.driver = 'police';
-  placeCar(car, x, z, Math.atan2(player.x - x, player.z - z));
-  wanted.units.push(car);
-  return car;
-}
-
-function releaseUnit(car) {
-  car.driver = 'parked'; // becomes an ordinary stealable cruiser
-  const i = wanted.units.indexOf(car);
-  if (i >= 0) wanted.units.splice(i, 1);
-}
-
-/** player: { x, z, speed, vx, vz } — the player's current state. */
-export function updatePolice(dt, player) {
-  wanted.flashClock += dt;
-  const want = CFG.policeCount[wanted.stars] ?? 0;
-
-  // Field the right number of cruisers.
-  if (wanted.stars > 0) {
-    let guard = 0;
-    while (wanted.units.length < want && guard++ < 3) spawnUnit(player);
-  }
-  for (let i = wanted.units.length - 1; i >= 0; i--) {
-    const u = wanted.units[i];
-    const d = Math.hypot(u.x - player.x, u.z - player.z);
-    if (wanted.units.length > want || d > 260) releaseUnit(u);
+class FootCop {
+  constructor(scene, x, z) {
+    this.mesh = buildCopMesh();
+    this.mesh.position.set(x, 0, z);
+    scene.add(this.mesh);
+    this.pos = this.mesh.position;
+    this.health = 50;
+    this.shootCd = Math.random() * 0.8 + 0.4;
+    this.walkPhase = Math.random() * 6;
+    this.dead = false;
+    this.down = false;
   }
 
-  // Eyes on the player?
-  let nearest = Infinity;
-  for (const u of wanted.units) {
-    const d = Math.hypot(u.x - player.x, u.z - player.z);
-    if (d < nearest) nearest = d;
+  hurt(amount) {
+    this.health -= amount;
+    if (this.health <= 0 && !this.down) {
+      this.down = true;
+      this.mesh.rotation.x = -Math.PI / 2;
+      this.mesh.position.y = 0.25;
+    }
   }
-  const seen = nearest < 62;
-  if (seen) {
-    wanted.unseenTime = 0;
-    wanted.drainTime = 0;
-  } else if (wanted.stars > 0) {
-    wanted.unseenTime += dt;
-    if (wanted.unseenTime > CFG.wantedDecaySightless) {
-      wanted.drainTime += dt;
-      if (wanted.drainTime > CFG.wantedDrainPerStar) {
-        wanted.drainTime = 0;
-        wanted.stars -= 1;
-        if (wanted.stars <= 0) clearWanted();
+
+  update(dt, player, stars, onShoot) {
+    if (this.down) return;
+    const parts = this.mesh.userData.parts;
+    const dx = player.pos.x - this.pos.x;
+    const dz = player.pos.z - this.pos.z;
+    const dist = Math.hypot(dx, dz);
+    const heading = Math.atan2(dx, dz);
+    this.mesh.rotation.y = heading;
+    let moving = 0;
+    if (dist > 9) {
+      const sp = 4.7;
+      this.pos.x += (dx / dist) * sp * dt;
+      this.pos.z += (dz / dist) * sp * dt;
+      moving = sp;
+    }
+    this.walkPhase += dt * 10;
+    const sw = moving > 0 ? Math.sin(this.walkPhase) * 0.5 : 0;
+    parts.legL.rotation.x = sw;
+    parts.legR.rotation.x = -sw;
+    parts.armL.rotation.x = -sw * 0.6;
+    parts.armR.rotation.x = dist <= 42 && stars >= 3 ? -1.35 : sw * 0.6;
+    // Shooting: only at 3+ stars, with accuracy that fades with range.
+    if (stars >= 3 && dist < 44 && !player.inCar) {
+      this.shootCd -= dt;
+      if (this.shootCd <= 0) {
+        this.shootCd = 0.75 + Math.random() * 0.6;
+        const hitChance = Math.max(0.1, 0.55 - dist * 0.011);
+        onShoot(this, Math.random() < hitChance);
+      }
+    } else if (stars >= 3 && dist < 40 && player.inCar) {
+      this.shootCd -= dt;
+      if (this.shootCd <= 0) {
+        this.shootCd = 0.9 + Math.random() * 0.6;
+        const hitChance = Math.max(0.06, 0.4 - dist * 0.009);
+        onShoot(this, Math.random() < hitChance);
       }
     }
   }
 
-  // Drive the pursuit.
-  for (const u of wanted.units) {
-    if (u.dead) continue;
-    const px = player.x + (player.vx ?? 0) * 0.45;
-    const pz = player.z + (player.vz ?? 0) * 0.45;
-    const desired = Math.atan2(px - u.x, pz - u.z);
-    let diff = desired - u.heading;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    const steer = Math.max(-1, Math.min(1, diff * 1.9));
-    const d = Math.hypot(player.x - u.x, player.z - u.z);
-    let throttle = 1;
-    if (d < 4.2 && Math.abs(player.speed) < 3) throttle = 0; // alongside: hold and bust
-    const prevTop = u.spec.top;
-    u.spec = { ...u.spec, top: CFG.policeTopSpeed[wanted.stars] ?? 26 };
-    stepCar(u, dt, { throttle, steer, handbrake: Math.abs(diff) > 2.4 });
-    u.spec.top = prevTop;
-    // Lightbar strobe.
-    if (u.lightbar) {
-      const phase = Math.floor(wanted.flashClock * 5 + u.flashPhase) % 2;
-      u.lightbar.children[0].visible = phase === 0;
-      u.lightbar.children[1].visible = phase === 1;
-    }
-  }
-
-  // The bust: a cruiser close while the player is slow or on foot.
-  if (wanted.stars > 0 && nearest < CFG.bustRange && Math.abs(player.speed) < 2.4) {
-    wanted.bustMeter += dt / CFG.bustBuildTime;
-    if (wanted.bustMeter >= 1) {
-      wanted.bustMeter = 0;
-      if (wanted.onBusted) wanted.onBusted();
-    }
-  } else {
-    wanted.bustMeter = Math.max(0, wanted.bustMeter - dt * 0.7);
+  dispose(scene) {
+    scene.remove(this.mesh);
+    this.dead = true;
   }
 }
 
-/** Any cruiser close enough to witness a crime at (x, z)? */
-export function witnessed(x, z, radius = 42) {
-  return wanted.units.some((u) => Math.hypot(u.x - x, u.z - z) < radius);
+const COPS_BY_STARS = [0, 1, 2, 3, 4, 6];
+
+export class PoliceSystem {
+  constructor(scene, rng) {
+    this.scene = scene;
+    this.rng = rng;
+    this.units = []; // {car, footCop, leaving, reverseT}
+    this.corpses = []; // downed officers, cleaned up on reset
+    this.bustedMeter = 0;
+    this.flashT = 0;
+  }
+
+  spawnUnit(playerPos) {
+    // Come from a road intersection 120–175 m away.
+    for (let tries = 0; tries < 10; tries++) {
+      const gx = ROAD_XS[this.rng.int(0, ROAD_XS.length - 1)];
+      const gz = ROAD_ZS[this.rng.int(0, ROAD_ZS.length - 1)];
+      const d = Math.hypot(gx - playerPos.x, gz - playerPos.z);
+      if (d > 110 && d < 190) {
+        const car = new Car(this.scene, 'cop', 0x22242a, gx, gz, 0);
+        car.driver = 'police';
+        this.units.push({ car, footCop: null, leaving: false, reverseT: 0 });
+        return;
+      }
+    }
+  }
+
+  update(dt, ctx) {
+    const { player, wanted, colliders, allCars } = ctx;
+    const stars = wanted.stars;
+    const target = COPS_BY_STARS[stars];
+    const active = this.units.filter((u) => !u.leaving);
+    if (active.length < target) this.spawnUnit(player.pos);
+    if (active.length > target && active.length > 0) {
+      // The extra unit peels off and leaves the area.
+      active[active.length - 1].leaving = true;
+    }
+
+    this.flashT += dt;
+    const flashOn = Math.floor(this.flashT * 3.5) % 2 === 0;
+    let nearestCopDist = Infinity;
+    let bustPressure = false;
+
+    for (let i = this.units.length - 1; i >= 0; i--) {
+      const u = this.units[i];
+      const car = u.car;
+      const distToPlayer = Math.hypot(car.pos.x - player.pos.x, car.pos.z - player.pos.z);
+      nearestCopDist = Math.min(nearestCopDist, distToPlayer);
+
+      // Flash the light bar.
+      const bar = car.mesh.getObjectByName('lightbar');
+      if (bar) {
+        bar.children[0].visible = flashOn;
+        bar.children[1].visible = !flashOn;
+      }
+
+      if (distToPlayer > 300) {
+        car.dispose(this.scene);
+        if (u.footCop) u.footCop.dispose(this.scene);
+        this.units.splice(i, 1);
+        continue;
+      }
+
+      if (u.leaving) {
+        // Drive away from the player and despawn.
+        const away = Math.atan2(car.pos.x - player.pos.x, car.pos.z - player.pos.z);
+        const steer = steerToward(car.heading, away);
+        car.step(dt, { throttle: 0.8, steer, brake: false, hand: false }, colliders, allCars, null);
+        if (distToPlayer > 240) {
+          car.dispose(this.scene);
+          this.units.splice(i, 1);
+        }
+        continue;
+      }
+
+      // Deploy the foot officer when close and slow near an on-foot player.
+      if (!u.footCop && !player.inCar && distToPlayer < 15 && Math.abs(car.speed) < 4) {
+        u.footCop = new FootCop(this.scene, car.pos.x + 1.6, car.pos.z);
+      }
+      if (u.footCop) {
+        u.footCop.update(dt, player, stars, ctx.onCopShoot);
+        if (u.footCop.down && ctx.onCopDown) {
+          ctx.onCopDown(u.footCop);
+          this.corpses.push(u.footCop);
+          u.footCop = null; // counted once; the body stays where it fell
+        }
+        // Officer re-enters when the player drives off.
+        if (u.footCop && player.inCar && distToPlayer > 26) {
+          u.footCop.dispose(this.scene);
+          u.footCop = null;
+        }
+      }
+
+      // Driving: hunt the player's predicted position.
+      const lead = player.inCar ? 0.45 : 0.15;
+      const tx = player.pos.x + (player.inCar ? player.inCar.forward().x * player.inCar.speed * lead : 0);
+      const tz = player.pos.z + (player.inCar ? player.inCar.forward().z * player.inCar.speed * lead : 0);
+      let throttle = 1;
+      let steer = steerToward(car.heading, Math.atan2(tx - car.pos.x, tz - car.pos.z));
+      if (u.reverseT > 0) {
+        u.reverseT -= dt;
+        throttle = -1;
+        steer = -steer;
+      } else if (car.stuck) {
+        u.reverseT = 0.65;
+      }
+      // When alongside an on-foot player, stop to make the arrest.
+      if (!player.inCar && distToPlayer < 8) throttle = 0;
+      car.step(dt, { throttle, steer, brake: distToPlayer < 5 && !!player.inCar, hand: false }, colliders, allCars, ctx.onCopCrash);
+
+      // Busted pressure: an officer (foot or car) close while the
+      // player is slow or on foot.
+      const playerSpeed = player.inCar ? Math.abs(player.inCar.speed) : player.speedNow;
+      if (u.footCop && !u.footCop.down) {
+        const fd = Math.hypot(u.footCop.pos.x - player.pos.x, u.footCop.pos.z - player.pos.z);
+        if (fd < 5.5 && playerSpeed < 2.4) bustPressure = true;
+      }
+      if (!player.inCar && distToPlayer < 6.5 && Math.abs(car.speed) < 3 && playerSpeed < 2.4) bustPressure = true;
+    }
+
+    if (bustPressure && stars > 0) {
+      this.bustedMeter = Math.min(1, this.bustedMeter + dt / 2.6);
+    } else {
+      this.bustedMeter = Math.max(0, this.bustedMeter - dt / 1.6);
+    }
+    return { nearestCopDist, anyCopNear: nearestCopDist < 48 };
+  }
+
+  reset() {
+    for (const u of this.units) {
+      u.car.dispose(this.scene);
+      if (u.footCop) u.footCop.dispose(this.scene);
+    }
+    for (const body of this.corpses) body.dispose(this.scene);
+    this.corpses = [];
+    this.units = [];
+    this.bustedMeter = 0;
+  }
+
+  // All live foot officers (for the player's gunfire and the minimap).
+  footCops() {
+    return this.units.map((u) => u.footCop).filter((f) => f && !f.down);
+  }
+
+  copCars() {
+    return this.units.filter((u) => !u.leaving).map((u) => u.car);
+  }
+}
+
+export function steerToward(heading, want) {
+  let d = want - heading;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return Math.max(-1, Math.min(1, d * 1.7));
 }
